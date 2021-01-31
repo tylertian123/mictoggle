@@ -48,44 +48,44 @@ struct pulse_object_destroyer {
 };
 
 void handle_block(int16_t average) {
-    /*
-     * When the button is pressed quickly we see:
-     *   - Wide + peak
-     *   - Wide - peak
-     *   - Wide + peak
-     * There may also be a brief + peak between the two wide + peaks.
-     * 
-     * When the button is held down then released:
-     *   - Wide + peak
-     *   - Wide - peak
-     *   - Flat 0 until button is released
-     *   - Wide - peak
-     *   - Wide + peak
-     * 
-     * Therefore we can count the number of wide + peaks.
-     * Every first peak is button down, every second peak is button up.
-     */
-    static int block_count = 0;
-    static int peak_count = 0;
-    // Count the number of blocks for which the average exceeds the threshold
-    // to filter out only the wide peaks
-    if (average >= THRESHOLD_VALUE) {
-        block_count ++;
-    }
-    else {
-        if (block_count >= PEAK_BLOCK_COUNT) {
-            peak_count ++;
-            if (peak_count == 1) {
-                std::cout << "Button down" << std::endl;
-            }
-            // Peak count 2
-            else {
-                std::cout << "Button up" << std::endl;
-                peak_count = 0;
-            }
-        }
-        block_count = 0;
-    }
+	/*
+	 * When the button is pressed quickly we see:
+	 *   - Wide + peak
+	 *   - Wide - peak
+	 *   - Wide + peak
+	 * There may also be a brief + peak between the two wide + peaks.
+	 * 
+	 * When the button is held down then released:
+	 *   - Wide + peak
+	 *   - Wide - peak
+	 *   - Flat 0 until button is released
+	 *   - Wide - peak
+	 *   - Wide + peak
+	 * 
+	 * Therefore we can count the number of wide + peaks.
+	 * Every first peak is button down, every second peak is button up.
+	 */
+	static int block_count = 0;
+	static int peak_count = 0;
+	// Count the number of blocks for which the average exceeds the threshold
+	// to filter out only the wide peaks
+	if (average >= THRESHOLD_VALUE) {
+		block_count ++;
+	}
+	else {
+		if (block_count >= PEAK_BLOCK_COUNT) {
+			peak_count ++;
+			if (peak_count == 1) {
+				std::cout << "Button down" << std::endl;
+			}
+			// Peak count 2
+			else {
+				std::cout << "Button up" << std::endl;
+				peak_count = 0;
+			}
+		}
+		block_count = 0;
+	}
 }
 
 pa_sample_spec in_sample_spec = {
@@ -117,7 +117,7 @@ void handle_stream_state(pa_stream *s, void*) {
 		case PA_STREAM_CREATING:
 		case PA_STREAM_TERMINATED:
 			break;
-		
+
 		case PA_STREAM_READY:
 			std::cout << "connected to stream!\n";
 			break;
@@ -135,11 +135,11 @@ void handle_context_state_change(pa_context *c, void *) {
 
 	switch (pa_context_get_state(c)) {
 		case PA_CONTEXT_CONNECTING:
-        case PA_CONTEXT_AUTHORIZING:
-        case PA_CONTEXT_SETTING_NAME:
-            break;
+		case PA_CONTEXT_AUTHORIZING:
+		case PA_CONTEXT_SETTING_NAME:
+			break;
 
-        case PA_CONTEXT_READY:
+		case PA_CONTEXT_READY:
 			{
 				std::cout << "pulse context ready\n";
 				// create a blank stream
@@ -149,7 +149,7 @@ void handle_context_state_change(pa_context *c, void *) {
 					mainloop_api->quit(mainloop_api, 1);
 					return;
 				}
-				
+
 				// setup read callback + state callback
 				pa_stream_set_read_callback(read_stream, handle_new_data, nullptr);
 				pa_stream_set_state_callback(read_stream, handle_stream_state, nullptr);
@@ -168,18 +168,18 @@ void handle_context_state_change(pa_context *c, void *) {
 
 		case PA_CONTEXT_TERMINATED:
 			mainloop_api->quit(mainloop_api, 0);
-            break;
+			break;
 
-        case PA_CONTEXT_FAILED:
-        default:
-            fprintf(stderr, "Connection failure: %s\n", pa_strerror(pa_context_errno(c)));
+		case PA_CONTEXT_FAILED:
+		default:
+			fprintf(stderr, "Connection failure: %s\n", pa_strerror(pa_context_errno(c)));
 			mainloop_api->quit(mainloop_api, 1);
 			break;
 	}
 }
 
 int main(int argc, char **argv) {
-    int err = -1;
+	int err = -1;
 
 	// pulse loop object
 	pa_mainloop *m = pa_mainloop_new();
@@ -200,10 +200,10 @@ int main(int argc, char **argv) {
 	pa_signal_new(SIGTERM, handle_exit, nullptr);
 
 	// create a new connection context
-    if (!(context = pa_context_new(mainloop_api, "mictoggle"))) {
+	if (!(context = pa_context_new(mainloop_api, "mictoggle"))) {
 		std::cerr << "failed to context new\n";
 		return 1;
-    }
+	}
 
 	pulse_object_destroyer<pa_context, pa_context_disconnect, pa_context_unref> context_dctx(context);
 
@@ -226,7 +226,7 @@ int main(int argc, char **argv) {
 
 	// all quit calls come back here, invoking the object destroyers in the right order
 
-    std::cout << "Cleaning up\n";
+	std::cout << "Cleaning up\n";
 	pa_signal_done();
 
 	return err;
