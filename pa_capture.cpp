@@ -15,8 +15,6 @@
 #include <pulse/pulseaudio.h>
 
 constexpr uint32_t SAMPLE_RATE = 4096;
-// times 2 for 2 channels
-constexpr int BUFFER_LENGTH = 512 * 2;
 constexpr int BLOCK_SIZE = 64;
 
 constexpr int THRESHOLD_PERCENT = 95;
@@ -106,8 +104,34 @@ void handle_exit(pa_mainloop_api *m, pa_signal_event *e, int sig, void *) {
 	m->quit(m, 0); // tell run to exit
 }
 
-void handle_new_data(pa_stream *s, size_t length, void *) {
-	std::cout << "got more read data with len " << length << "\n";
+void handle_new_data(pa_stream *s, size_t length, void *userdata) {
+    static int sample_count = 0;
+    static long sample_sum = 0;
+	const void *data;
+    assert(s);
+    assert(length > 0);
+
+    if ((pa_stream_peek(s, &data, &length))) {
+        std::cerr << "pa_stream_peek() failed: " << pa_strerror(pa_context_errno(context)) << "\n";
+        mainloop_api->quit(mainloop_api, 1);
+        return;
+    }
+
+    if (!length) {
+        return;
+    }
+    if (data) {
+        const int16_t *idata = reinterpret_cast<const int16_t*>(data);
+        for (size_t i = 0; i < length / sizeof(int16_t); i ++) {
+            sample_sum += idata[i];
+            if (++sample_count == BLOCK_SIZE) {
+                sample_count = 0;
+                handle_block(static_cast<int16_t>(sample_sum / BLOCK_SIZE));
+                sample_sum = 0;
+            }
+        }
+    }
+    pa_stream_drop(s);
 }
 
 void handle_stream_state(pa_stream *s, void*) {
@@ -158,7 +182,7 @@ void handle_context_state_change(pa_context *c, void *) {
 				// TODO: https://freedesktop.org/software/pulseaudio/doxygen/structpa__buffer__attr.html#a2877c9500727299a2d143ef0af13f908
 
 				// open the recorder stream
-				if (pa_stream_connect_record(read_stream, DEVICE_NAME, nullptr, (pa_stream_flags_t)0) < 0) {
+				if (pa_stream_connect_record(read_stream, nullptr, nullptr, (pa_stream_flags_t)0) < 0) {
 					fprintf(stderr, "pa_stream_connect_record() failed: %s\n", pa_strerror(pa_context_errno(c)));
 					mainloop_api->quit(mainloop_api, 1);
 					return;
