@@ -11,16 +11,16 @@
 #include <cstdlib>
 #include <stdint.h>
 #include <signal.h>
-#include <unistd.h>
 #include <pulse/simple.h>
 #include <pulse/pulseaudio.h>
 
 constexpr uint32_t SAMPLE_RATE = 4096;
 // times 2 for 2 channels
 constexpr int BUFFER_LENGTH = 512 * 2;
-constexpr int BLOCK_SIZE = 128;
+constexpr int BLOCK_SIZE = 64;
 
 constexpr int THRESHOLD_PERCENT = 95;
+constexpr int PEAK_BLOCK_COUNT = 5;
 constexpr int16_t THRESHOLD_VALUE = std::numeric_limits<int16_t>::max() * THRESHOLD_PERCENT / 100;
 
 // For graceful exit
@@ -28,6 +28,47 @@ volatile bool running = true;
 
 void sig_handler(int signal) {
     running = false;
+}
+
+void handle_block(int16_t average) {
+    /*
+     * When the button is pressed quickly we see:
+     *   - Wide + peak
+     *   - Wide - peak
+     *   - Wide + peak
+     * There may also be a brief + peak between the two wide + peaks.
+     * 
+     * When the button is held down then released:
+     *   - Wide + peak
+     *   - Wide - peak
+     *   - Flat 0 until button is released
+     *   - Wide - peak
+     *   - Wide + peak
+     * 
+     * Therefore we can count the number of wide + peaks.
+     * Every first peak is button down, every second peak is button up.
+     */
+    static int block_count = 0;
+    static int peak_count = 0;
+    // Count the number of blocks for which the average exceeds the threshold
+    // to filter out only the wide peaks
+    if (average >= THRESHOLD_VALUE) {
+        block_count ++;
+    }
+    else {
+        if (block_count >= PEAK_BLOCK_COUNT) {
+            peak_count ++;
+            if (peak_count == 1) {
+                std::cout << "Button down" << std::endl;
+            }
+            // Peak count 2
+            else {
+                std::cout << "Button up" << std::endl;
+                peak_count = 0;
+            }
+        }
+        block_count = 0;
+    }
 }
 
 int main(int argc, char **argv) {
@@ -61,16 +102,10 @@ int main(int argc, char **argv) {
             sum += buffer[i];
             if (++j == BLOCK_SIZE) {
                 j = 0;
-                sum /= BLOCK_SIZE;
-
-                std::cout << sum << "\n";
-
+                handle_block(static_cast<int16_t>(sum / BLOCK_SIZE));
                 sum = 0;
             }
         }
-        //std::cout << "Block average #" << ++block_count << ": " << sum << "\n";
-
-        //usleep(1000 * 50);
     }
 
     std::cout << "Cleaning up\n";
