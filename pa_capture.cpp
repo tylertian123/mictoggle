@@ -20,7 +20,10 @@ constexpr int BLOCK_SIZE = 64;
 constexpr int THRESHOLD_PERCENT = 95;
 constexpr int PEAK_BLOCK_COUNT = 5;
 constexpr int16_t THRESHOLD_VALUE = std::numeric_limits<int16_t>::max() * THRESHOLD_PERCENT / 100;
-static const char * DEVICE_NAME = "alsa_output.pci-0000_09_00.3.analog-stereo.monitor";
+static const char * DEVICE_NAME = nullptr;
+static const char * REMAPPED_DEVICE_NAME = "mictoggle_remapped";
+
+static bool muted = false;
 
 template<typename Obj>
 using pulse_object_destroy_func = void (*)(Obj *);
@@ -45,7 +48,28 @@ struct pulse_object_destroyer {
 	}
 };
 
-void handle_block(int16_t average) {
+pa_sample_spec in_sample_spec = {
+	.format = PA_SAMPLE_S16NE,
+	.rate = SAMPLE_RATE,
+	.channels = 2,
+};
+
+pa_mainloop_api *mainloop_api = nullptr;
+pa_context *context = nullptr;
+pa_stream *read_stream = nullptr;
+pa_stream *remapped_stream = nullptr;
+
+void handle_mute_completion(pa_context *c, int success, void *data) {
+    bool *muted = reinterpret_cast<bool*>(data);
+    if (!success) {
+        std::cerr << (*muted ? "Mute" : "Unmute") << " failed: " << pa_strerror(pa_context_errno(context)) << "\n";
+        mainloop_api->quit(mainloop_api, 1);
+        return;
+    }
+    std::cout << "Mic is now " << (*muted ? "muted" : "unmuted") << "\n";
+}
+
+int handle_block(int16_t average) {
 	/*
 	 * When the button is pressed quickly we see:
 	 *   - Wide + peak
@@ -62,6 +86,8 @@ void handle_block(int16_t average) {
 	 * 
 	 * Therefore we can count the number of wide + peaks.
 	 * Every first peak is button down, every second peak is button up.
+     * 
+     * Returns 0 if no press occurred, 1 if pressed down, 2 if released.
 	 */
 	static int block_count = 0;
 	static int peak_count = 0;
@@ -72,30 +98,21 @@ void handle_block(int16_t average) {
 	}
 	else {
 		if (block_count >= PEAK_BLOCK_COUNT) {
+            block_count = 0;
 			peak_count ++;
 			if (peak_count == 1) {
-				std::cout << "Button down" << std::endl;
+				return 1;
 			}
 			// Peak count 2
 			else {
-				std::cout << "Button up" << std::endl;
 				peak_count = 0;
+                return 2;
 			}
 		}
 		block_count = 0;
 	}
+    return 0;
 }
-
-pa_sample_spec in_sample_spec = {
-	.format = PA_SAMPLE_S16NE,
-	.rate = SAMPLE_RATE,
-	.channels = 2,
-};
-
-pa_mainloop_api *mainloop_api = nullptr;
-pa_context *context = nullptr;
-pa_stream *read_stream = nullptr;
-
 
 void handle_exit(pa_mainloop_api *m, pa_signal_event *e, int sig, void *) {
 	assert(m);
@@ -120,18 +137,26 @@ void handle_new_data(pa_stream *s, size_t length, void *userdata) {
     if (!length) {
         return;
     }
+    bool toggle = false;
     if (data) {
         const int16_t *idata = reinterpret_cast<const int16_t*>(data);
         for (size_t i = 0; i < length / sizeof(int16_t); i ++) {
             sample_sum += idata[i];
             if (++sample_count == BLOCK_SIZE) {
                 sample_count = 0;
-                handle_block(static_cast<int16_t>(sample_sum / BLOCK_SIZE));
+                if (handle_block(static_cast<int16_t>(sample_sum / BLOCK_SIZE)) == 2) {
+                    toggle = true;
+                }
                 sample_sum = 0;
             }
         }
     }
     pa_stream_drop(s);
+
+    if (toggle) {
+        muted = !muted;
+        pa_context_set_source_mute_by_name(context, REMAPPED_DEVICE_NAME, muted, handle_mute_completion, &muted);
+    }
 }
 
 void handle_stream_state(pa_stream *s, void*) {
@@ -182,7 +207,7 @@ void handle_context_state_change(pa_context *c, void *) {
 				// TODO: https://freedesktop.org/software/pulseaudio/doxygen/structpa__buffer__attr.html#a2877c9500727299a2d143ef0af13f908
 
 				// open the recorder stream
-				if (pa_stream_connect_record(read_stream, nullptr, nullptr, (pa_stream_flags_t)0) < 0) {
+				if (pa_stream_connect_record(read_stream, DEVICE_NAME, nullptr, (pa_stream_flags_t)0) < 0) {
 					fprintf(stderr, "pa_stream_connect_record() failed: %s\n", pa_strerror(pa_context_errno(c)));
 					mainloop_api->quit(mainloop_api, 1);
 					return;
