@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Version=0.1
+Name=mictoggle
+Comment=Mute/unmute the mic by pressing buttons on earbuds
+Icon=audio-input-microphone-symbolic
+Path=/usr/local/bin
+Exec=mictoggle <device>
+Terminal=false

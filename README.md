@@ -42,3 +42,10 @@ mictoggle <device name here>
 
 The device name of the remapped device will be `mictoggle_remapped`.
 You probably won't need it, and currently it can't be changed.
+
+## Desktop Entry
+
+You can make `mictoggle` launchable from the desktop environment as an application using the provided `mictoggle.desktop`.
+
+Make sure to replace `<device>` in the file with your device name as mentioned in the Usage section.
+Place the `mictoggle` binary in `/usr/local/bin`, or change the `Path` entry in the file to where `mictoggle` is located. Place this file in the correct directory (`/usr/share/applications/` or `/usr/local/share/applications/`).
