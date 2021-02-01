@@ -116,8 +116,10 @@ void handle_mute_completion(pa_context *c, int success, void *data) {
     std::cout << "Mic is now " << (*muted ? "muted" : "unmuted") << "\n";
 	// ID of the last notification
 	static gint last_id = -1;
-	NotifyNotification *notif = notify_notification_new(*muted ? "Mic muted" : "Mic unmuted", nullptr, nullptr);
-	notify_notification_set_timeout(notif, 500);
+	NotifyNotification *notif = *muted
+		? notify_notification_new("mictoggle", "Microphone muted", "microphone-sensitivity-muted-symbolic")
+		: notify_notification_new("mictoggle", "Microphone unmuted", "audio-input-microphone-symbolic");
+	notify_notification_set_timeout(notif, 1000);
 	notify_notification_set_hint_int32(notif, "transient", 1);
 	// Set the ID of the new notification if this isn't the first
 	// this makes the new notification replace the old one
