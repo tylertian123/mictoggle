@@ -1,3 +1,7 @@
+"""
+Dev utility used to plot the mic signal.
+"""
+
 from sys import argv
 from matplotlib import pyplot as plt
 

@@ -1,9 +1,9 @@
 /*
  * Usage:
- *      TODO
+ *      mictoggle [device name]
  * 
- * TODO: Can we reduce the CPU usage further?
- * sleep doesn't seem to be helping much, maybe use the async API?
+ * Device name can be found through `pactl list sources`.
+ * Looks something like "alsa_input.pci-0000_00_1f.3.analog-stereo".
  */
 
 #include <iostream>
@@ -302,7 +302,7 @@ int main(int argc, char **argv) {
 		std::cout << "Using device name: " << device_name << "\n";
 	}
 	else {
-		std::cout << "No device provided, using default device\n";
+		std::cout << "Warning: No device provided, using default device; if remapped device is not created, please pass in device name as a command line argument\n";
 	}
 
 	// pulse loop object
