@@ -14,6 +14,7 @@
 #include <signal.h>
 #include <pulse/simple.h>
 #include <pulse/pulseaudio.h>
+#include <libnotify/notify.h>
 
 constexpr uint32_t SAMPLE_RATE = 4096;
 constexpr int BLOCK_SIZE = 64;
@@ -113,6 +114,19 @@ void handle_mute_completion(pa_context *c, int success, void *data) {
         return;
     }
     std::cout << "Mic is now " << (*muted ? "muted" : "unmuted") << "\n";
+	// ID of the last notification
+	static gint last_id = -1;
+	NotifyNotification *notif = notify_notification_new(*muted ? "Mic muted" : "Mic unmuted", nullptr, nullptr);
+	notify_notification_set_timeout(notif, 500);
+	notify_notification_set_hint_int32(notif, "transient", 1);
+	// Set the ID of the new notification if this isn't the first
+	// this makes the new notification replace the old one
+	if (last_id != -1) {
+		g_object_set(notif, "id", last_id, nullptr);
+	}
+	notify_notification_show(notif, nullptr);
+	g_object_get(notif, "id", &last_id, nullptr);
+	g_object_unref(notif);
 }
 
 void handle_exit(pa_mainloop_api *m, pa_signal_event *e, int sig, void *) {
@@ -278,6 +292,7 @@ void handle_context_state_change(pa_context *c, void *) {
 }
 
 int main(int argc, char **argv) {
+	notify_init("mictoggle");
 	int err = -1;
 
 	if (argc > 1) {
@@ -332,8 +347,8 @@ int main(int argc, char **argv) {
 	}
 
 	// all quit calls come back here, invoking the object destroyers in the right order
-
 	std::cout << "Cleaning up\n";
+	notify_uninit();
 	pa_signal_done();
 
 	return err;
