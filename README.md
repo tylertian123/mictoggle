@@ -7,6 +7,14 @@ Partially inspired by [roligheten/AndroidMediaControlsWindows](https://github.co
 
 Note `mictoggle` only works on Linux and has only been tested on Ubuntu.
 
+## Features
+
+- Creates a remapped mic so you can choose between muted and unmuted inputs
+- Allows you to mute/unmute the mic with a single press of the media button
+- Shows desktop notifications (`libnotify`) when muting/unmuting
+- Detects when the mic/earbuds are plugged in/removed and mutes the mic automatically
+- No false positives or missed detection of presses so far!
+
 ## Building
 
 You need the following libraries:
