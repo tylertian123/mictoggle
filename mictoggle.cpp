@@ -61,9 +61,7 @@ struct pulse_object_destroyer {
 
 // Global PulseAudio refs
 pa_mainloop_api *mainloop_api = nullptr;
-pa_context *context = nullptr;
 pa_stream *read_stream = nullptr;
-pa_stream *remapped_stream = nullptr;
 
 int check_press(int16_t average) {
 	/*
@@ -110,19 +108,12 @@ int check_press(int16_t average) {
     return 0;
 }
 
-void handle_mute_completion(pa_context *c, int success, void *data) {
-    bool *muted = reinterpret_cast<bool*>(data);
-    if (!success) {
-        std::cerr << (*muted ? "Mute" : "Unmute") << " failed: " << pa_strerror(pa_context_errno(context)) << "\n";
-        mainloop_api->quit(mainloop_api, 1);
-        return;
-    }
-    std::cout << "Mic is now " << (*muted ? "muted" : "unmuted") << "\n";
+// Show a notification with libnotify
+// Replaces the previous notification shown
+void show_notification(const char *summary, const char *body, const char *icon) {
 	// ID of the last notification
 	static gint last_id = -1;
-	NotifyNotification *notif = *muted
-		? notify_notification_new("mictoggle", "Microphone muted", "microphone-sensitivity-muted-symbolic")
-		: notify_notification_new("mictoggle", "Microphone unmuted", "audio-input-microphone-symbolic");
+	NotifyNotification *notif = notify_notification_new(summary, body, icon);
 	notify_notification_set_timeout(notif, 1000);
 	notify_notification_set_hint_int32(notif, "transient", 1);
 	// Set the ID of the new notification if this isn't the first
@@ -135,13 +126,32 @@ void handle_mute_completion(pa_context *c, int success, void *data) {
 	g_object_unref(notif);
 }
 
+// Callback for mute
+void handle_mute_completion(pa_context *c, int success, void *data) {
+    bool *muted = reinterpret_cast<bool*>(data);
+    if (!success) {
+        std::cerr << (*muted ? "Mute" : "Unmute") << " failed: " << pa_strerror(pa_context_errno(c)) << "\n";
+        mainloop_api->quit(mainloop_api, 1);
+        return;
+    }
+    std::cout << "Mic is now " << (*muted ? "muted" : "unmuted") << "\n";
+	if (*muted) {
+		show_notification("mictoggle", "Microphone muted", "microphone-sensitivity-muted-symbolic");
+	}
+	else {
+		show_notification("mictoggle", "Microphone unmuted", "audio-input-microphone-symbolic");
+	}
+}
+
 void handle_exit(pa_mainloop_api *m, pa_signal_event *e, int sig, void *) {
 	assert(m);
 
-	std::cerr << "got exit signal, killing" << std::endl;
+	std::cerr << "Got exit signal, killing" << std::endl;
 	m->quit(m, 0); // tell run to exit
 }
 
+// Callback for new data from source
+// This is where the signal is processed to detect button presses
 void handle_new_data(pa_stream *s, size_t length, void *userdata) {
     static int sample_count = 0;
     static long sample_sum = 0;
@@ -150,7 +160,7 @@ void handle_new_data(pa_stream *s, size_t length, void *userdata) {
     assert(length > 0);
 
     if ((pa_stream_peek(s, &data, &length))) {
-        std::cerr << "pa_stream_peek() failed: " << pa_strerror(pa_context_errno(context)) << "\n";
+        std::cerr << "pa_stream_peek() failed: " << pa_strerror(pa_context_errno(pa_stream_get_context(s))) << "\n";
         mainloop_api->quit(mainloop_api, 1);
         return;
     }
@@ -160,6 +170,8 @@ void handle_new_data(pa_stream *s, size_t length, void *userdata) {
     }
     bool toggle = false;
     if (data) {
+		// Take the average of each block and feed it to check_press()
+		// Then mute or unmute at the end if a press occurred
         const int16_t *idata = reinterpret_cast<const int16_t*>(data);
         for (size_t i = 0; i < length / sizeof(int16_t); i ++) {
             sample_sum += idata[i];
@@ -176,10 +188,12 @@ void handle_new_data(pa_stream *s, size_t length, void *userdata) {
 
     if (toggle) {
         muted = !muted;
-        pa_operation_unref(pa_context_set_source_mute_by_name(context, REMAPPED_DEVICE_NAME, muted, handle_mute_completion, &muted));
+        pa_operation_unref(pa_context_set_source_mute_by_name(pa_stream_get_context(s), REMAPPED_DEVICE_NAME, muted, handle_mute_completion, &muted));
     }
 }
 
+// Callback for a source event
+// This should handle mic plugged and mic unplugged
 void handle_subscription_event(pa_context *c, pa_subscription_event_type_t type, uint32_t idx, void *userdata) {
 	if (idx == PA_INVALID_INDEX) {
 		std::cerr << "Subscription event failed: " << pa_strerror(pa_context_errno(c)) << "\n";
@@ -194,16 +208,17 @@ void handle_subscription_event(pa_context *c, pa_subscription_event_type_t type,
 }
 
 // Connects the read stream to the real mic and mutes the remapped mic
-void connect_stream() {
+void connect_stream(pa_context *c) {
 	if (pa_stream_connect_record(read_stream, device_name, nullptr, (pa_stream_flags_t)0) < 0) {
-		std::cerr << "pa_stream_connect_record() failed: " << pa_strerror(pa_context_errno(context)) << "\n";
+		std::cerr << "pa_stream_connect_record() failed: " << pa_strerror(pa_context_errno(c)) << "\n";
 		mainloop_api->quit(mainloop_api, 1);
 		return;
 	}
 	muted = true;
-	pa_operation_unref(pa_context_set_source_mute_by_name(context, REMAPPED_DEVICE_NAME, muted, handle_mute_completion, &muted));
+	pa_operation_unref(pa_context_set_source_mute_by_name(c, REMAPPED_DEVICE_NAME, muted, handle_mute_completion, &muted));
 }
 
+// Read stream state callback
 void handle_stream_state(pa_stream *s, void*) {
 	assert(s);
 
@@ -213,17 +228,18 @@ void handle_stream_state(pa_stream *s, void*) {
 			break;
 
 		case PA_STREAM_READY:
-			std::cout << "connected to stream!\n";
+			std::cout << "Connected to stream!\n";
 			break;
 
 		case PA_STREAM_FAILED:
 		default:
-			fprintf(stderr, "failed with stream error: %s\n", pa_strerror(pa_context_errno(pa_stream_get_context(s))));
+			std::cerr << "Failed with stream error: " << pa_strerror(pa_context_errno(pa_stream_get_context(s))) << "\n";
 			mainloop_api->quit(mainloop_api, 1);
 			break;
 	}
 }
 
+// Main context state callback
 void handle_context_state_change(pa_context *c, void *) {
 	assert(c);
 
@@ -235,11 +251,11 @@ void handle_context_state_change(pa_context *c, void *) {
 
 		case PA_CONTEXT_READY:
 			{
-				std::cout << "pulse context ready\n";
+				std::cout << "Pulse context ready\n";
 				// create a blank stream
-				read_stream = pa_stream_new(context, "mictoggle read", &in_sample_spec, nullptr);
+				read_stream = pa_stream_new(c, "mictoggle read", &in_sample_spec, nullptr);
 				if (!read_stream) {
-					std::cerr << "pulse stream failed open\n";
+					std::cerr << "pa_stream_new() failed\n";
 					mainloop_api->quit(mainloop_api, 1);
 					return;
 				}
@@ -259,12 +275,7 @@ void handle_context_state_change(pa_context *c, void *) {
 						int err = pa_context_errno(c);
 						if (err == PA_ERR_NOENTITY) {
 							// Create the device if necessary by loading the module-remap-source module
-							std::cerr << "Remapped device (" << REMAPPED_DEVICE_NAME << ") does not exist; loading module-remap-source\n";
-							if (!device_name) {
-								std::cerr << "Cannot create remapped device because main device name not provided!\n";
-								mainloop_api->quit(mainloop_api, 1);
-								return;
-							}
+							std::cout << "Remapped device (" << REMAPPED_DEVICE_NAME << ") does not exist; loading module-remap-source\n";
 							using std::literals::string_literals::operator""s;
 							std::string args = "source_name="s + REMAPPED_DEVICE_NAME + " master=" + device_name
 								+ " master_channel_map=front-left,front-right channel_map=front-left,front-right";
@@ -276,7 +287,7 @@ void handle_context_state_change(pa_context *c, void *) {
 									return;
 								}
 								std::cout << "Remapped device created; connecting stream\n";
-								connect_stream();
+								connect_stream(c);
 							}, nullptr));
 						}
 						else {
@@ -291,7 +302,7 @@ void handle_context_state_change(pa_context *c, void *) {
 					}
 					// Success! Connect stream
 					std::cout << "Remapped device (" << REMAPPED_DEVICE_NAME << ") exists; connecting stream\n";
-					connect_stream();
+					connect_stream(c);
 				}, nullptr));
 				// Get info about the original device for its index
 				// This should also handle the subscriptions
@@ -309,8 +320,8 @@ void handle_context_state_change(pa_context *c, void *) {
 					// Set global variable for the index of the source device
 					device_idx = i->index;
 					// Subscribe to source events and set callback
-					pa_context_set_subscribe_callback(context, handle_subscription_event, nullptr);
-					pa_operation_unref(pa_context_subscribe(context, PA_SUBSCRIPTION_MASK_SOURCE, +[](pa_context *c, int success, void*) {
+					pa_context_set_subscribe_callback(c, handle_subscription_event, nullptr);
+					pa_operation_unref(pa_context_subscribe(c, PA_SUBSCRIPTION_MASK_SOURCE, +[](pa_context *c, int success, void*) {
 						if (!success) {
 							std::cerr << "pa_context_subscribe() failed: " << pa_strerror(pa_context_errno(c)) << "\n";
 							mainloop_api->quit(mainloop_api, 1);
@@ -328,7 +339,7 @@ void handle_context_state_change(pa_context *c, void *) {
 
 		case PA_CONTEXT_FAILED:
 		default:
-			fprintf(stderr, "Connection failure: %s\n", pa_strerror(pa_context_errno(c)));
+			std::cerr << "Connection failure: " << pa_strerror(pa_context_errno(c)) << "\n";
 			mainloop_api->quit(mainloop_api, 1);
 			break;
 	}
@@ -350,7 +361,7 @@ int main(int argc, char **argv) {
 	// pulse loop object
 	pa_mainloop *m = pa_mainloop_new();
 	if (m == nullptr) {
-		std::cerr << "failed to create mainloop\n";
+		std::cerr << "Failed to create mainloop\n";
 		return 1;
 	}
 
@@ -366,8 +377,9 @@ int main(int argc, char **argv) {
 	pa_signal_new(SIGTERM, handle_exit, nullptr);
 
 	// create a new connection context
+	pa_context *context;
 	if (!(context = pa_context_new(mainloop_api, "mictoggle"))) {
-		std::cerr << "failed to context new\n";
+		std::cerr << "pa_context_new() failed\n";
 		return 1;
 	}
 
@@ -385,9 +397,9 @@ int main(int argc, char **argv) {
 	pulse_object_destroyer<pa_stream, pa_stream_unref> read_stream_dctx(read_stream); // make sure this is destructed at the right time
 
 	// start mainloop
-	std::cout << "ready, starting mainloop\n";
+	std::cout << "Ready, starting mainloop\n";
 	if (pa_mainloop_run(m, &err) < 0) {
-		std::cerr << "mainloop run failed\n";
+		std::cerr << "Mainloop run failed\n";
 	}
 
 	// all quit calls come back here, invoking the object destroyers in the right order
