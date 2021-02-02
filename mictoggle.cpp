@@ -34,7 +34,7 @@ pa_sample_spec in_sample_spec = {
 // States
 static const char *device_name = nullptr;
 static uint32_t device_idx = PA_INVALID_INDEX;
-static bool muted = true;
+static bool remapped_muted = true;
 
 template<typename Obj>
 using pulse_object_destroy_func = void (*)(Obj *);
@@ -59,9 +59,29 @@ struct pulse_object_destroyer {
 	}
 };
 
+struct notification_contents {
+	const char *summary;
+	const char *body;
+	const char *icon;
+};
+notification_contents notif_contents_connected = {
+	.summary = "Microphone Connected (mictoggle)",
+	.body = "Remapped microphone has been <b>muted</b>",
+	.icon = "object-select-symbolic",
+};
+notification_contents notif_contents_disconnected = {
+	.summary = "Microphone Disconnected (mictoggle)",
+	.body = "Remapped microphone has been <b>muted</b>",
+	.icon = "action-unavailable-symbolic",
+};
+
 // Global PulseAudio refs
 pa_mainloop_api *mainloop_api = nullptr;
 pa_stream *read_stream = nullptr;
+
+// These are placed outside the function so we can reset them from elsewhere
+static int block_count = 0;
+static int peak_count = 0;
 
 int check_press(int16_t average) {
 	/*
@@ -83,8 +103,6 @@ int check_press(int16_t average) {
      * 
      * Returns 0 if no press occurred, 1 if pressed down, 2 if released.
 	 */
-	static int block_count = 0;
-	static int peak_count = 0;
 	// Count the number of blocks for which the average exceeds the threshold
 	// to filter out only the wide peaks
 	if (average >= THRESHOLD_VALUE) {
@@ -127,19 +145,26 @@ void show_notification(const char *summary, const char *body, const char *icon) 
 }
 
 // Callback for mute
+// User data should be a notification_contents struct containing the custom notification contents
+// or nullptr to use the default notifications
 void handle_mute_completion(pa_context *c, int success, void *data) {
-    bool *muted = reinterpret_cast<bool*>(data);
     if (!success) {
-        std::cerr << (*muted ? "Mute" : "Unmute") << " failed: " << pa_strerror(pa_context_errno(c)) << "\n";
+        std::cerr << (remapped_muted ? "Mute" : "Unmute") << " failed: " << pa_strerror(pa_context_errno(c)) << "\n";
         mainloop_api->quit(mainloop_api, 1);
         return;
     }
-    std::cout << "Mic is now " << (*muted ? "muted" : "unmuted") << "\n";
-	if (*muted) {
-		show_notification("mictoggle", "Microphone muted", "microphone-sensitivity-muted-symbolic");
+    std::cout << "[Info] Mic " << (remapped_muted ? "muted" : "unmuted") << "\n";
+	if (!data) {
+		if (remapped_muted) {
+			show_notification("mictoggle", "Microphone <b>muted</b>", "microphone-sensitivity-muted-symbolic");
+		}
+		else {
+			show_notification("mictoggle", "Microphone <b>unmuted</b>", "audio-input-microphone-symbolic");
+		}
 	}
 	else {
-		show_notification("mictoggle", "Microphone unmuted", "audio-input-microphone-symbolic");
+		notification_contents *notif = reinterpret_cast<notification_contents*>(data);
+		show_notification(notif->summary, notif->body, notif->icon);
 	}
 }
 
@@ -187,8 +212,8 @@ void handle_new_data(pa_stream *s, size_t length, void *userdata) {
     pa_stream_drop(s);
 
     if (toggle) {
-        muted = !muted;
-        pa_operation_unref(pa_context_set_source_mute_by_name(pa_stream_get_context(s), REMAPPED_DEVICE_NAME, muted, handle_mute_completion, &muted));
+        remapped_muted = !remapped_muted;
+        pa_operation_unref(pa_context_set_source_mute_by_name(pa_stream_get_context(s), REMAPPED_DEVICE_NAME, remapped_muted, handle_mute_completion, nullptr));
     }
 }
 
@@ -200,10 +225,26 @@ void handle_subscription_event(pa_context *c, pa_subscription_event_type_t type,
 		mainloop_api->quit(mainloop_api, 1);
 		return;
 	}
-
+	// Filter out only source changed events
 	if (idx == device_idx && ((type & PA_SUBSCRIPTION_EVENT_FACILITY_MASK) == PA_SUBSCRIPTION_EVENT_SOURCE)
 		&& ((type & PA_SUBSCRIPTION_EVENT_TYPE_MASK) == PA_SUBSCRIPTION_EVENT_CHANGE)) {
-		std::cout << "Received source changed event\n";
+		// Get source info to check whether the mic was plugged in or removed
+		pa_operation_unref(pa_context_get_source_info_by_index(c, device_idx, +[](pa_context *c, const pa_source_info *i, int eol, void*) {
+			// See handle_context_state_change() for meaning of eol
+			if (eol < 0) {
+				std::cerr << "pa_context_get_source_info_by_index() failed for source device: " << pa_strerror(pa_context_errno(c)) << "\n";
+				mainloop_api->quit(mainloop_api, 1);
+				return;
+			}
+			if (eol) {
+				return;
+			}
+			bool removed = !i->active_port || !i->active_port->available;
+			std::cout << "[Info] Mic " << (removed ? "removed" : "plugged in") << "\n";
+			block_count = peak_count = 0;
+			pa_operation_unref(pa_context_set_source_mute_by_name(c, REMAPPED_DEVICE_NAME, true, handle_mute_completion,
+				removed ? &notif_contents_disconnected : &notif_contents_connected));
+		}, nullptr));
 	}
 }
 
@@ -214,8 +255,7 @@ void connect_stream(pa_context *c) {
 		mainloop_api->quit(mainloop_api, 1);
 		return;
 	}
-	muted = true;
-	pa_operation_unref(pa_context_set_source_mute_by_name(c, REMAPPED_DEVICE_NAME, muted, handle_mute_completion, &muted));
+	remapped_muted = true;
 }
 
 // Read stream state callback
@@ -291,7 +331,7 @@ void handle_context_state_change(pa_context *c, void *) {
 							}, nullptr));
 						}
 						else {
-							std::cerr << "pa_context_get_source_info_by_name() failed: " << pa_strerror(err) << "\n";
+							std::cerr << "pa_context_get_source_info_by_name() failed for remapped device: " << pa_strerror(err) << "\n";
 							mainloop_api->quit(mainloop_api, 1);
 							return;
 						}
@@ -309,7 +349,7 @@ void handle_context_state_change(pa_context *c, void *) {
 				pa_operation_unref(pa_context_get_source_info_by_name(c, device_name, +[](pa_context *c, const pa_source_info *i, int eol, void *userdata) {
 					// eol < 0 means error occurred
 					if (eol < 0) {
-						std::cerr << "pa_context_get_source_info_by_name() failed: " << pa_strerror(pa_context_errno(c)) << "\n";
+						std::cerr << "pa_context_get_source_info_by_name() failed for source device: " << pa_strerror(pa_context_errno(c)) << "\n";
 						mainloop_api->quit(mainloop_api, 1);
 						return;
 					}
