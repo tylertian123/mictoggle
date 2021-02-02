@@ -16,6 +16,7 @@
 #include <pulse/pulseaudio.h>
 #include <libnotify/notify.h>
 
+// Config constants
 constexpr uint32_t SAMPLE_RATE = 4096;
 constexpr int BLOCK_SIZE = 64;
 
@@ -24,7 +25,15 @@ constexpr int PEAK_BLOCK_COUNT = 5;
 constexpr int16_t THRESHOLD_VALUE = std::numeric_limits<int16_t>::max() * THRESHOLD_PERCENT / 100;
 static const char * REMAPPED_DEVICE_NAME = "mictoggle_remapped";
 
+pa_sample_spec in_sample_spec = {
+	.format = PA_SAMPLE_S16NE,
+	.rate = SAMPLE_RATE,
+	.channels = 2,
+};
+
+// States
 static const char *device_name = nullptr;
+static uint32_t device_idx = PA_INVALID_INDEX;
 static bool muted = true;
 
 template<typename Obj>
@@ -50,12 +59,7 @@ struct pulse_object_destroyer {
 	}
 };
 
-pa_sample_spec in_sample_spec = {
-	.format = PA_SAMPLE_S16NE,
-	.rate = SAMPLE_RATE,
-	.channels = 2,
-};
-
+// Global PulseAudio refs
 pa_mainloop_api *mainloop_api = nullptr;
 pa_context *context = nullptr;
 pa_stream *read_stream = nullptr;
@@ -176,6 +180,19 @@ void handle_new_data(pa_stream *s, size_t length, void *userdata) {
     }
 }
 
+void handle_subscription_event(pa_context *c, pa_subscription_event_type_t type, uint32_t idx, void *userdata) {
+	if (idx == PA_INVALID_INDEX) {
+		std::cerr << "Subscription event failed: " << pa_strerror(pa_context_errno(c)) << "\n";
+		mainloop_api->quit(mainloop_api, 1);
+		return;
+	}
+
+	if (idx == device_idx && ((type & PA_SUBSCRIPTION_EVENT_FACILITY_MASK) == PA_SUBSCRIPTION_EVENT_SOURCE)
+		&& ((type & PA_SUBSCRIPTION_EVENT_TYPE_MASK) == PA_SUBSCRIPTION_EVENT_CHANGE)) {
+		std::cout << "Received source changed event\n";
+	}
+}
+
 // Connects the read stream to the real mic and mutes the remapped mic
 void connect_stream() {
 	if (pa_stream_connect_record(read_stream, device_name, nullptr, (pa_stream_flags_t)0) < 0) {
@@ -185,47 +202,6 @@ void connect_stream() {
 	}
 	muted = true;
 	pa_operation_unref(pa_context_set_source_mute_by_name(context, REMAPPED_DEVICE_NAME, muted, handle_mute_completion, &muted));
-}
-
-void handle_load_module(pa_context *c, uint32_t idx, void *userdata) {
-	if (idx == PA_INVALID_INDEX) {
-		std::cerr << "pa_context_load_module() failed: " << pa_strerror(pa_context_errno(context)) << "\n";
-		mainloop_api->quit(mainloop_api, 1);
-		return;
-	}
-	std::cerr << "Remapped device created; connecting stream\n";
-	connect_stream();
-}
-
-void handle_source_info(pa_context *c, const pa_source_info *i, int eol, void *userdata) {
-	// If an error occurred then most likely the remapped device doesn't exist
-	if (eol < 0) {
-		int err = pa_context_errno(c);
-		if (err == PA_ERR_NOENTITY) {
-			// Create the device if necessary by loading the module-remap-source module
-			std::cerr << "Remapped device (" << REMAPPED_DEVICE_NAME << ") does not exist; loading module-remap-source\n";
-			if (!device_name) {
-				std::cerr << "Cannot create remapped device because main device name not provided!\n";
-				mainloop_api->quit(mainloop_api, 1);
-				return;
-			}
-			using std::literals::string_literals::operator""s;
-			std::string args = "source_name="s + REMAPPED_DEVICE_NAME + " master=" + device_name
-				+ " master_channel_map=front-left,front-right channel_map=front-left,front-right";
-			pa_operation_unref(pa_context_load_module(c, "module-remap-source", args.c_str(), handle_load_module, nullptr));
-		}
-		else {
-			std::cerr << "pa_context_get_source_info_by_name() failed: " << pa_strerror(err) << "\n";
-			mainloop_api->quit(mainloop_api, 1);
-			return;
-		}
-	}
-	if (eol) {
-		return;
-	}
-	// Success!
-	std::cerr << "Remapped device (" << REMAPPED_DEVICE_NAME << ") exists; connecting stream\n";
-	connect_stream();
 }
 
 void handle_stream_state(pa_stream *s, void*) {
@@ -277,7 +253,72 @@ void handle_context_state_change(pa_context *c, void *) {
 				
 				// Get info about the remapped mic to see if it exists
 				// The callback should also connect the stream
-				pa_operation_unref(pa_context_get_source_info_by_name(c, REMAPPED_DEVICE_NAME, handle_source_info, nullptr));
+				pa_operation_unref(pa_context_get_source_info_by_name(c, REMAPPED_DEVICE_NAME, +[](pa_context *c, const pa_source_info *i, int eol, void *userdata) {
+					// If an error occurred then most likely the remapped device doesn't exist
+					if (eol < 0) {
+						int err = pa_context_errno(c);
+						if (err == PA_ERR_NOENTITY) {
+							// Create the device if necessary by loading the module-remap-source module
+							std::cerr << "Remapped device (" << REMAPPED_DEVICE_NAME << ") does not exist; loading module-remap-source\n";
+							if (!device_name) {
+								std::cerr << "Cannot create remapped device because main device name not provided!\n";
+								mainloop_api->quit(mainloop_api, 1);
+								return;
+							}
+							using std::literals::string_literals::operator""s;
+							std::string args = "source_name="s + REMAPPED_DEVICE_NAME + " master=" + device_name
+								+ " master_channel_map=front-left,front-right channel_map=front-left,front-right";
+							// Load module with success callback that connects the stream
+							pa_operation_unref(pa_context_load_module(c, "module-remap-source", args.c_str(), +[](pa_context *c, uint32_t idx, void *) {
+								if (idx == PA_INVALID_INDEX) {
+									std::cerr << "pa_context_load_module() failed: " << pa_strerror(pa_context_errno(c)) << "\n";
+									mainloop_api->quit(mainloop_api, 1);
+									return;
+								}
+								std::cout << "Remapped device created; connecting stream\n";
+								connect_stream();
+							}, nullptr));
+						}
+						else {
+							std::cerr << "pa_context_get_source_info_by_name() failed: " << pa_strerror(err) << "\n";
+							mainloop_api->quit(mainloop_api, 1);
+							return;
+						}
+					}
+					// End-of-list, no data
+					if (eol) {
+						return;
+					}
+					// Success! Connect stream
+					std::cout << "Remapped device (" << REMAPPED_DEVICE_NAME << ") exists; connecting stream\n";
+					connect_stream();
+				}, nullptr));
+				// Get info about the original device for its index
+				// This should also handle the subscriptions
+				pa_operation_unref(pa_context_get_source_info_by_name(c, device_name, +[](pa_context *c, const pa_source_info *i, int eol, void *userdata) {
+					// eol < 0 means error occurred
+					if (eol < 0) {
+						std::cerr << "pa_context_get_source_info_by_name() failed: " << pa_strerror(pa_context_errno(c)) << "\n";
+						mainloop_api->quit(mainloop_api, 1);
+						return;
+					}
+					// Positive value of eol means end of list, so no processing
+					if (eol) {
+						return;
+					}
+					// Set global variable for the index of the source device
+					device_idx = i->index;
+					// Subscribe to source events and set callback
+					pa_context_set_subscribe_callback(context, handle_subscription_event, nullptr);
+					pa_operation_unref(pa_context_subscribe(context, PA_SUBSCRIPTION_MASK_SOURCE, +[](pa_context *c, int success, void*) {
+						if (!success) {
+							std::cerr << "pa_context_subscribe() failed: " << pa_strerror(pa_context_errno(c)) << "\n";
+							mainloop_api->quit(mainloop_api, 1);
+							return;
+						}
+						std::cout << "Subscribed to source events\n";
+					}, nullptr));
+				}, nullptr));
 			}
 			break;
 
@@ -302,7 +343,8 @@ int main(int argc, char **argv) {
 		std::cout << "Using device name: " << device_name << "\n";
 	}
 	else {
-		std::cout << "Warning: No device provided, using default device; if remapped device is not created, please pass in device name as a command line argument\n";
+		std::cerr << "No device provided! Please provide device name as a command line argument\n";
+		return 1;
 	}
 
 	// pulse loop object
