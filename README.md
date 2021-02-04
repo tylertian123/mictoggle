@@ -48,8 +48,8 @@ When running, pass the device name of the original mic as a command-line argumen
 mictoggle <device name here> 
 ```
 
-The device name of the remapped device will be `mictoggle_remapped`.
-You probably won't need it, and currently it can't be changed.
+The remapped device is created with the `module-remap-source` module and will be called `mictoggle_remapped` (you can't change this currently).
+When `mictoggle` is killed, the module will be unloaded (even if `mictoggle` did not load it, i.e. it already existed).
 
 ## Desktop Entry
 

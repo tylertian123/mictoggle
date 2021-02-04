@@ -34,6 +34,7 @@ pa_sample_spec in_sample_spec = {
 // States
 static const char *device_name = nullptr;
 static uint32_t device_idx = PA_INVALID_INDEX;
+static uint32_t remapped_idx = PA_INVALID_INDEX;
 static bool remapped_muted = true;
 
 template<typename Obj>
@@ -168,11 +169,25 @@ void handle_mute_completion(pa_context *c, int success, void *data) {
 	}
 }
 
-void handle_exit(pa_mainloop_api *m, pa_signal_event *e, int sig, void *) {
+void handle_exit(pa_mainloop_api *m, pa_signal_event *e, int sig, void *c) {
 	assert(m);
 
-	std::cerr << "Got exit signal, killing" << std::endl;
-	m->quit(m, 0); // tell run to exit
+	std::cerr << "Got exit signal (" << sig << "), killing\n";
+	if (remapped_idx != PA_INVALID_INDEX) {
+		std::cout << "Unloading module for remapped device\n";
+		pa_operation_unref(pa_context_unload_module(static_cast<pa_context*>(c), remapped_idx, +[](pa_context *c, int success, void*) {
+			if (!success) {
+				std::cerr << "pa_context_unload_module() failed: " << pa_strerror(pa_context_errno(c)) << "\n";
+			}
+			else {
+				std::cout << "Remapped device successfully unloaded; exiting\n";
+			}
+			mainloop_api->quit(mainloop_api, 0);
+		}, nullptr));
+	}
+	else {
+		m->quit(m, 0); // tell run to exit
+	}
 }
 
 // Callback for new data from source
@@ -326,6 +341,7 @@ void handle_context_state_change(pa_context *c, void *) {
 									mainloop_api->quit(mainloop_api, 1);
 									return;
 								}
+								remapped_idx = idx;
 								std::cout << "Remapped device created; connecting stream\n";
 								connect_stream(c);
 							}, nullptr));
@@ -340,6 +356,7 @@ void handle_context_state_change(pa_context *c, void *) {
 					if (eol) {
 						return;
 					}
+					remapped_idx = i->index;
 					// Success! Connect stream
 					std::cout << "Remapped device (" << REMAPPED_DEVICE_NAME << ") exists; connecting stream\n";
 					connect_stream(c);
@@ -412,9 +429,6 @@ int main(int argc, char **argv) {
 	// setup signal handling
 	pa_signal_init(mainloop_api);
 
-	// register handlers for int/term
-	pa_signal_new(SIGINT, handle_exit, nullptr);
-	pa_signal_new(SIGTERM, handle_exit, nullptr);
 
 	// create a new connection context
 	pa_context *context;
@@ -422,6 +436,10 @@ int main(int argc, char **argv) {
 		std::cerr << "pa_context_new() failed\n";
 		return 1;
 	}
+
+	// register handlers for int/term
+	pa_signal_new(SIGINT, handle_exit, context);
+	pa_signal_new(SIGTERM, handle_exit, context);
 
 	pulse_object_destroyer<pa_context, pa_context_disconnect, pa_context_unref> context_dctx(context);
 
