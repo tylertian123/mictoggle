@@ -462,6 +462,7 @@ int main(int argc, char **argv) {
 
 	// all quit calls come back here, invoking the object destroyers in the right order
 	std::cout << "Cleaning up\n";
+	show_notification("Exited (mictoggle)", "Remapped microphone has been <b>unloaded</b>", "process-stop-symbolic");
 	notify_uninit();
 	pa_signal_done();
 

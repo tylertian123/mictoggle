@@ -7,3 +7,9 @@ Icon=audio-input-microphone-symbolic
 Path=/usr/local/bin
 Exec=mictoggle <device>
 Terminal=false
+Actions=Kill;
+
+[Desktop Action Kill]
+Exec=pkill -x mictoggle
+Name=Exit mictoggle
+Icon=process-stop-symbolic

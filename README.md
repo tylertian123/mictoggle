@@ -57,3 +57,5 @@ You can make `mictoggle` launchable from the desktop environment as an applicati
 
 Make sure to replace `<device>` in the file with your device name as mentioned in the Usage section.
 Place the `mictoggle` binary in `/usr/local/bin`, or change the `Path` entry in the file to where `mictoggle` is located. Place this file in the correct directory (`/usr/share/applications/` or `/usr/local/share/applications/`).
+
+The desktop entry also includes an "Exit mictoggle" action (requires `pkill`) so you can easily kill mictoggle when you're done with it (since it does not have a window).
